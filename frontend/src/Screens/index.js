@@ -4,7 +4,8 @@ import LoginScreen from "./LoginScreen/LoginScreen";
 import HomeScreen from "./HomeScreen/HomeScreen";
 import BloqueInputLabel from "../Components/BloqueInputLabel/BloqueInputLabel";
 import SosGrosoSabeloScreen from "./SosGrosoSabeloScreen/SosGrosoSabeloScreen";
+import ForgotPasswordScreen from "./ForgotPasswordScreen/ForgotPasswordScreen";
 
 
 
-export {ValidateEmailScreen,RegisterScreen,LoginScreen,HomeScreen,BloqueInputLabel,SosGrosoSabeloScreen}
+export {ForgotPasswordScreen,ValidateEmailScreen,RegisterScreen,LoginScreen,HomeScreen,BloqueInputLabel,SosGrosoSabeloScreen}

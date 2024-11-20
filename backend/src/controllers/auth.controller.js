@@ -5,8 +5,10 @@ import User from "../model/User.model.js"
 import emailTransporter from "../helpers/emailTransporter.helper.js"
 import jwt from 'jsonwebtoken'
 import ENVIROMENT from '../config/enviroment.js'
+import UserRepository from '../repositories/user.repository.js'
+import AppError from '../helpers/errors/app.error.js'
 
-export const registerController = async (req, res) => {
+export const registerController = async (req, res, next) => {
     try {
         const { email, name, password } = req.body
         const datosRecibidos = {
@@ -26,42 +28,37 @@ export const registerController = async (req, res) => {
             name: {
                 value: name,
                 validations: [
-                    validateMinLength, //Preguntar a mati si la refactorización de esta función (de callback a referencia) está bien
+                    validateMinLength,
                     validateString
                 ]
             }
         }
 
-        const errores = {
+        const validationErrors = {
             name: [],
             password: [],
-            email: [],
-            hayErrores: false
+            email: []
         }
-
+        let hayErrores = false
         for (let field_name in datosRecibidos) {
             for (let validation of datosRecibidos[field_name].validations) {
                 let validationResult = validation(field_name, datosRecibidos[field_name].value)
                 if (validationResult) {
-                    errores[field_name].push(validationResult)
-                    errores.hayErrores = true
+                    validationErrors[field_name].push(validationResult)
+                    hayErrores = true
                 }
             }
         }
 
-        if (errores.hayErrores) {
-            throw errores
+        if (hayErrores) {
+            return next(new AppError('Los datos ingresados no cumplen los parámetros solicidatos', 400, validationErrors))
         }
 
-        const passwordHash = await bcrypt.hash(password, 10)
-
-        let usuarioNuevo = new User({
+        await UserRepository.createUser({
             name: name,
-            password: passwordHash,
-            email: email
+            email: email,
+            password: password
         })
-
-        await usuarioNuevo.save()
 
         const validationToken = jwt.sign(
             {
@@ -86,7 +83,6 @@ export const registerController = async (req, res) => {
             .setPayload({
                 datosUsuario: {
                     name: name,
-                    password: passwordHash,
                     email: email
                 }
             })
@@ -95,53 +91,24 @@ export const registerController = async (req, res) => {
         return res.json(successResponse)
     }
     catch (error) {
-
-        if (error.hayErrores) {
-            const response = new ResponseBuilder()
-                .setCode("VALIDATION_ERROR")
-                .setMessage('Los datos ingresados no cumplen los parámetros solicidatos')
-                .setOk(false)
-                .setStatus(200)
-                .setPayload(error)
-                .build()
-
-
-
-            return res.json(response)
-        }
-
         if (error.code === 11000) {
-            const response = new ResponseBuilder()
-                .setCode('DUPLICATED_EMAIL')
-                .setOk(false)
-                .setStatus(400)
-                .setMessage("El email ingresado ya se encuentra registrado")
-                .setPayload()
-                .build()
-
-                console.log(response)
-
-            return res.json(response)
+            return next(new AppError("El email ingresado ya se encuentra registrado", 400))
         }
 
-        console.log(error)
-
+        return next(new AppError(error.message, error.code))
     }
 }
 
-export const validateEmailController = async (req, res) => { //Preguntar a mati como se manejan las validaciones de token de mail, si desde el front o desde el back. También si se pueden hacer consultas a la base de datos desde el front.
+export const validateEmailController = async (req, res, next) => {
     try {
         const { validationToken } = req.params
 
         const { email } = jwt.verify(validationToken, ENVIROMENT.SECRET_KEY)
 
-        const usuarioEncontrado = await User.findOne({ email: email }) //Preguntar a mati sobre la nomenclatura al llamar la variable que contiene el usuario cuando hacemos la consulta a la base de datos
+        const usuarioEncontrado = await UserRepository.getUserByEmail(email)
 
         if (usuarioEncontrado.emailValidate) {
-            throw {
-                email: email,
-                code: 'EMAIL_VALIDATED_ALREADY'
-            } //Preguntar a mati cual es la mejor manera de throwear errores
+            return next(new AppError("El email ingresado ya se encuentra validado.", 400))
         }
 
         usuarioEncontrado.emailValidate = true
@@ -161,71 +128,116 @@ export const validateEmailController = async (req, res) => { //Preguntar a mati 
         return res.json(respuesta)
     }
     catch (error) {
-        if (error.code === 'EMAIL_VALIDATED_ALREADY') {
-            const response = new ResponseBuilder()
-                .setOk(false) //Preguntar a mati si el ok pertenece a la consulta o al estado de la respuesta
-                .setStatus(400)
-                .setMessage('El email del usuario ya fue validado')
-                .setCode(error.code)
-                .setPayload(error)
-                .build()
-
-            return res.json(response)
-        }
+        return next(new AppError(error.message, 500))
     }
 }
 
 
-export const loginController = async (req, res) => {
-    try{
+export const loginController = async (req, res, next) => {
+    try {
         const { email, password } = req.body
+
+        const usuarioEncontrado = await UserRepository.getUserByEmail(email)
+        if (!usuarioEncontrado) {
+            return next(new AppError('El email ingresado no pertenece a ningún usuario.', 400))
+        }
+        if (!(await bcrypt.compare(password, usuarioEncontrado.password))) {
+            return next(new AppError('El password ingresado es incorrecto', 400))
+        }
+
+        const accessToken = jwt.sign(
+            {
+                user_id: usuarioEncontrado._id,
+                name: usuarioEncontrado.name,
+                email: usuarioEncontrado.email, 
+                role: usuarioEncontrado.role
+            },
+            ENVIROMENT.SECRET_KEY,
+            {
+                expiresIn: '1d' //Esto determina cuanto dura la sesion
+            }
+        )
+        const responseSuccess = new ResponseBuilder()
+            .setOk(true)
+            .setStatus(200)
+            .setCode('LOGIN_SUCCESS')
+            .setMessage('Inicio de sesión exitoso')
+            .setPayload({
+                accessToken: accessToken,
+                bienvenida: `Bienvenido de nuevo, ${usuarioEncontrado.name}!`
+            })
+            .build()
+
+
+        return res.send(responseSuccess)
+    }
+    catch (error) {
+        return next(new AppError(error.message, error.code))
+    }
+}
+
+export const forgotPasswordController = async (req, res, next) => {
+
+    try {
+        const { email } = req.body
 
         const usuarioEncontrado = await User.findOne({
             email: email
         })
 
-        if(!usuarioEncontrado){
-            throw {
-                message: 'El email ingresado no pertenece a ningún usuario.',
-                code: 'UNKNOWN_EMAIL'
-            }
-        }
-        if(!(await bcrypt.compare(password, usuarioEncontrado.password))){
-            throw {
-                message: 'El password ingresado es incorrecto',
-                code: 'PASSWORD_DOES_NOT_MATCH'
-            }
+        if (!usuarioEncontrado) {
+            return next(new AppError('El email ingresado no existe en la base de datos', 400))
         }
 
-        const responseSuccess = new ResponseBuilder()
-        .setOk(true)
-        .setStatus(200)
-        .setCode('LOGIN_SUCCESS')
-        .setMessage('Inicio de sesión exitoso')
-        .setPayload({
-            bienvenida: `Bienvenido de nuevo, ${usuarioEncontrado.name}!`
+        const tokenResetPassword = jwt.sign({ email: email }, ENVIROMENT.SECRET_KEY, {
+            expiresIn: '1d'
         })
-        .build()
 
-    
-        return res.send(responseSuccess)
+        const resetUrl = 'http://localhost:5173/reset-password/' + tokenResetPassword
+
+        emailTransporter.sendMail({
+            to: email,
+            subject: 'Olvidé mi contraseña',
+            html: `Para cambiar su contraseña y recuperar su usuario, haga click <a href="${resetUrl}">aquí</a>`
+        })
+
+        res.json("ok")
     }
-    catch(error){
-
-        const { code, message } = error
-
-        const responseError = new ResponseBuilder()
-        .setStatus(400)
-        .setCode(code)
-        .setMessage(message)
-        .setOk(false)
-        .build()
-
-        return res.json(responseError)
+    catch (error) {
+        return next(new AppError(error.message, error.code))
     }
 }
 
 
+export const resetPasswordController = async (req, res, next) => {
+    try {
+        const { form } = req.body
+
+        const { validationToken } = req.params
+
+
+        if (form.password.length < 8) {
+            return next(new AppError('El email ingresado no existe en la base de datos', 400))
+        }
+
+        const email = jwt.verify(validationToken, ENVIROMENT.SECRET_KEY).email
+
+        await UserRepository.resetPassword(email, form.password)
+
+        const response = new ResponseBuilder()
+            .setCode('PASSWORD_RESET_SUCCESS')
+            .setMessage('El password fue renovado con éxito.')
+            .setOk(true)
+            .setStatus(200)
+            .build()
+
+        return res.json(response)
+
+    }
+    catch (error) {
+        return next(new AppError(error.message, error.code))
+    }
+}
 
 
 
